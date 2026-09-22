@@ -2,6 +2,22 @@ export type SendResult =
   | { ok: true; messageId: string; threadId?: string }
   | { ok: false; status: number; error: string };
 
+export function agentMailSendUrl(inboxId: string): string {
+  return `https://api.agentmail.to/v0/inboxes/${encodeURIComponent(inboxId)}/messages/send`;
+}
+
+export function agentMailIdempotencyKey(...parts: string[]): string {
+  const cleaned = parts
+    .map((part) => part.replace(/[^A-Za-z0-9._~-]+/g, "-"))
+    .filter((part) => part.length > 0)
+    .join(".");
+  return cleaned.slice(0, 200);
+}
+
+export function isLabeledDemoAddress(email: string): boolean {
+  return email.toLowerCase().endsWith("@example.invalid");
+}
+
 export async function sendInboxMessage(args: {
   inboxId: string;
   apiKey: string;
@@ -10,22 +26,19 @@ export async function sendInboxMessage(args: {
   text: string;
   idempotencyKey: string;
 }): Promise<SendResult> {
-  const response = await fetch(
-    `https://api.agentmail.to/v0/inboxes/${encodeURIComponent(args.inboxId)}/messages`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${args.apiKey}`,
-        "content-type": "application/json",
-        "idempotency-key": args.idempotencyKey,
-      },
-      body: JSON.stringify({
-        to: [args.to],
-        subject: args.subject,
-        text: args.text,
-      }),
+  const response = await fetch(agentMailSendUrl(args.inboxId), {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${args.apiKey}`,
+      "content-type": "application/json",
+      "idempotency-key": args.idempotencyKey,
     },
-  );
+    body: JSON.stringify({
+      to: [args.to],
+      subject: args.subject,
+      text: args.text,
+    }),
+  });
   const body = await response.text();
   if (!response.ok) {
     return {

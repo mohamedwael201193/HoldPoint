@@ -4,6 +4,7 @@ import {
   action,
   internalAction,
   internalMutation,
+  internalQuery,
   mutation,
   query,
 } from "./_generated/server";
@@ -11,7 +12,12 @@ import { parseTradeReply } from "./engine/intent";
 import { extractRoutingToken, formatRoutingToken } from "./engine/routing";
 import { alreadyRecorded } from "./guards";
 import type { Id } from "./_generated/dataModel";
-import { parseInboundPayload, sendInboxMessage } from "./model/agentmail";
+import {
+  agentMailIdempotencyKey,
+  isLabeledDemoAddress,
+  parseInboundPayload,
+  sendInboxMessage,
+} from "./model/agentmail";
 import { draftChaseEmail, parseTradeReplyWithLanguage } from "./model/ai";
 import { quoteExistsInSource } from "./engine/quotes";
 
@@ -255,6 +261,7 @@ export const recordOutbound = internalMutation({
     status: v.union(
       v.literal("sent"),
       v.literal("skipped_duplicate"),
+      v.literal("skipped_demo"),
       v.literal("failed"),
       v.literal("budget_blocked"),
     ),
@@ -265,7 +272,21 @@ export const recordOutbound = internalMutation({
       .withIndex("byIdempotencyKey", (q) => q.eq("idempotencyKey", args.idempotencyKey))
       .unique();
     if (alreadyRecorded(existing)) {
-      return { duplicate: true as const, sendId: existing._id };
+      if (
+        existing.status === "sent" ||
+        existing.status === "skipped_demo" ||
+        existing.status === "skipped_duplicate" ||
+        existing.status === "budget_blocked"
+      ) {
+        return { duplicate: true as const, sendId: existing._id };
+      }
+      await ctx.db.patch(existing._id, {
+        subject: args.subject,
+        body: args.body,
+        status: args.status,
+        sentAt: Date.now(),
+      });
+      return { duplicate: false as const, sendId: existing._id };
     }
     const sendId = await ctx.db.insert("outboundSends", {
       orgId: args.orgId,
@@ -308,7 +329,12 @@ export const loadNotifyContext = internalMutation({
     ).filter((row) => row.sentAt >= dayStart.getTime() && row.status === "sent").length;
     const existingSend = await ctx.db
       .query("outboundSends")
-      .withIndex("byIdempotencyKey", (q) => q.eq("idempotencyKey", `notify:${args.planId}:${args.tradeId}:${inspection.code}`))
+      .withIndex("byIdempotencyKey", (q) =>
+        q.eq(
+          "idempotencyKey",
+          agentMailIdempotencyKey("notify", args.planId, args.tradeId, inspection.code),
+        ),
+      )
       .unique();
     return {
       orgId: org._id,
@@ -321,7 +347,7 @@ export const loadNotifyContext = internalMutation({
       toEmail: trade.email,
       inspectionCode: inspection.code,
       windowLabel: `${start} → ${end}`,
-      idempotencyKey: `notify:${args.planId}:${args.tradeId}:${inspection.code}`,
+      idempotencyKey: agentMailIdempotencyKey("notify", args.planId, args.tradeId, inspection.code),
       existingStatus: existingSend?.status ?? null,
     };
   },
@@ -336,7 +362,11 @@ export const notifyTrade = internalAction({
   handler: async (ctx, args) => {
     const loaded = await ctx.runMutation(internal.mail.loadNotifyContext, args);
     if (!loaded) return { skipped: true as const, reason: "missing context" };
-    if (loaded.existingStatus === "sent") {
+    if (
+      loaded.existingStatus === "sent" ||
+      loaded.existingStatus === "skipped_demo" ||
+      loaded.existingStatus === "skipped_duplicate"
+    ) {
       return { skipped: true as const, reason: "idempotent replay" };
     }
     if (loaded.sentToday >= loaded.dailySendBudget) {
@@ -360,6 +390,40 @@ export const notifyTrade = internalAction({
       projectName: loaded.projectName,
     });
 
+    if (isLabeledDemoAddress(loaded.toEmail)) {
+      await ctx.runMutation(internal.mail.recordOutbound, {
+        orgId: loaded.orgId,
+        permitId: loaded.permitId,
+        toEmail: loaded.toEmail,
+        subject: draft.value.subject,
+        body: draft.value.body,
+        idempotencyKey: loaded.idempotencyKey,
+        status: "skipped_demo",
+      });
+      await ctx.runMutation(internal.mail.recordActivity, {
+        orgId: loaded.orgId,
+        permitId: loaded.permitId,
+        kind: "mail_skipped_demo",
+        summary: `Labeled demo inbox; live send not attempted for ${loaded.inspectionCode}`,
+      });
+      return { skipped: true as const, reason: "demo trade address" };
+    }
+
+    const apiKey = process.env.AGENTMAIL_API_KEY;
+    const inboxId = process.env.AGENTMAIL_INBOX_ID;
+    if (!apiKey || !inboxId) {
+      await ctx.runMutation(internal.mail.recordOutbound, {
+        orgId: loaded.orgId,
+        permitId: loaded.permitId,
+        toEmail: loaded.toEmail,
+        subject: draft.value.subject,
+        body: draft.value.body,
+        idempotencyKey: loaded.idempotencyKey,
+        status: "failed",
+      });
+      return { skipped: true as const, reason: "mailbox not configured" };
+    }
+
     const existing = await ctx.runMutation(internal.mail.recordOutbound, {
       orgId: loaded.orgId,
       permitId: loaded.permitId,
@@ -371,25 +435,6 @@ export const notifyTrade = internalAction({
     });
     if (existing.duplicate) {
       return { skipped: true as const, reason: "idempotent replay" };
-    }
-
-    const apiKey = process.env.AGENTMAIL_API_KEY;
-    const inboxId = process.env.AGENTMAIL_INBOX_ID;
-    if (!apiKey || !inboxId) {
-      await ctx.runMutation(internal.mail.markSendStatus, {
-        sendId: existing.sendId,
-        status: "failed",
-        error: "AGENTMAIL_INBOX_ID or AGENTMAIL_API_KEY missing",
-      });
-      return { skipped: true as const, reason: "mailbox not configured" };
-    }
-    if (loaded.toEmail.endsWith("@example.invalid")) {
-      await ctx.runMutation(internal.mail.markSendStatus, {
-        sendId: existing.sendId,
-        status: "failed",
-        error: "seeded trade uses a labeled invalid inbox; live send skipped",
-      });
-      return { skipped: true as const, reason: "demo trade address" };
     }
 
     const sent = await sendInboxMessage({
@@ -418,12 +463,51 @@ export const notifyTrade = internalAction({
   },
 });
 
+export const recordActivity = internalMutation({
+  args: {
+    orgId: v.id("orgs"),
+    permitId: v.optional(v.id("permits")),
+    kind: v.string(),
+    summary: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("activity", {
+      orgId: args.orgId,
+      permitId: args.permitId,
+      kind: args.kind,
+      sponsor: "agentmail",
+      durationMs: 0,
+      summary: args.summary,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const demoMailboxContext = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const org = await ctx.db.query("orgs").first();
+    if (!org) return null;
+    const permit = await ctx.db
+      .query("permits")
+      .withIndex("byOrg", (q) => q.eq("orgId", org._id))
+      .first();
+    return {
+      orgId: org._id,
+      permitId: permit?._id,
+      routingToken: permit ? formatRoutingToken(permit.routingToken) : "[HP-NONE]",
+      projectName: permit?.projectName ?? "HoldPoint",
+    };
+  },
+});
+
 export const markSendStatus = internalMutation({
   args: {
     sendId: v.id("outboundSends"),
     status: v.union(
       v.literal("sent"),
       v.literal("skipped_duplicate"),
+      v.literal("skipped_demo"),
       v.literal("failed"),
       v.literal("budget_blocked"),
     ),
@@ -465,6 +549,75 @@ export const acceptWebhook = internalAction({
       providerMessageId: parsed.providerMessageId || args.eventId,
       eventType: parsed.eventType,
     });
+  },
+});
+
+export const proveLiveSend = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{
+    ok: boolean;
+    reason?: string;
+    duplicate?: boolean;
+    messageId?: string;
+  }> => {
+    const apiKey = process.env.AGENTMAIL_API_KEY;
+    const inboxId = process.env.AGENTMAIL_INBOX_ID;
+    if (!apiKey || !inboxId) {
+      return { ok: false, reason: "mailbox not configured" };
+    }
+    const demo = await ctx.runQuery(internal.mail.demoMailboxContext, {});
+    if (!demo?.permitId) return { ok: false, reason: "seed demo workspace first" };
+    const day = new Date().toISOString().slice(0, 10);
+    const idempotencyKey = agentMailIdempotencyKey("live-loopback", day);
+    const subject = `${demo.routingToken} live mailbox proof`;
+    const body = [
+      `HoldPoint loopback send for ${demo.projectName}.`,
+      `This is a real AgentMail send to the configured coordination inbox.`,
+      `Reply with ${demo.routingToken} to route inbound into the permit.`,
+    ].join("\n");
+    const reserved = await ctx.runMutation(internal.mail.recordOutbound, {
+      orgId: demo.orgId,
+      permitId: demo.permitId,
+      toEmail: inboxId,
+      subject,
+      body,
+      idempotencyKey,
+      status: "sent",
+    });
+    if (reserved.duplicate) {
+      return { ok: true, duplicate: true, reason: "idempotent replay" };
+    }
+    const sent = await sendInboxMessage({
+      inboxId,
+      apiKey,
+      to: inboxId,
+      subject,
+      text: body,
+      idempotencyKey,
+    });
+    if (!sent.ok) {
+      await ctx.runMutation(internal.mail.markSendStatus, {
+        sendId: reserved.sendId,
+        status: "failed",
+        error: sent.error,
+      });
+      return { ok: false, reason: sent.error };
+    }
+    await ctx.runMutation(internal.mail.markSendStatus, {
+      sendId: reserved.sendId,
+      status: "sent",
+      providerMessageId: sent.messageId,
+      providerThreadId: sent.threadId,
+    });
+    await ctx.runMutation(internal.mail.recordActivity, {
+      orgId: demo.orgId,
+      permitId: demo.permitId,
+      kind: "mail_sent",
+      summary: `Live AgentMail send ${sent.messageId}`,
+    });
+    return { ok: true, messageId: sent.messageId };
   },
 });
 

@@ -9,7 +9,7 @@ import {
 } from "./_generated/server";
 import type { DataModel, Id } from "./_generated/dataModel";
 import { sha256Hex } from "./engine/hash";
-import { normalizeStatus } from "./engine/normalize";
+import { extractStatus, normalizeStatus, watchFingerprint } from "./engine/normalize";
 import { firecrawl } from "./model/firecrawl";
 
 export const getRecord = internalQuery({
@@ -154,7 +154,7 @@ async function runFetch(
       maxAge: 0,
     });
     const markdown = page.markdown ?? "";
-    const contentHash = await sha256Hex(markdown);
+    const contentHash = await sha256Hex(watchFingerprint(markdown));
     return await ctx.runMutation(internal.watches.recordFetch, {
       permitId,
       url: permit.sourceUrl,
@@ -170,9 +170,4 @@ async function runFetch(
       durationMs: Date.now() - started,
     });
   }
-}
-
-function extractStatus(markdown: string): string | null {
-  const match = markdown.match(/Status[:\s]+([A-Za-z0-9 &/–-]+)/i);
-  return match?.[1]?.trim() ?? null;
 }

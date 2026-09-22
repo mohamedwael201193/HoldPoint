@@ -172,6 +172,7 @@ export default defineSchema({
     status: v.union(
       v.literal("sent"),
       v.literal("skipped_duplicate"),
+      v.literal("skipped_demo"),
       v.literal("failed"),
       v.literal("budget_blocked"),
     ),

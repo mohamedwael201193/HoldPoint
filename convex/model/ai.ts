@@ -146,22 +146,27 @@ async function openaiJson(apiKey: string, prompt: string): Promise<string | null
 }
 
 async function geminiJson(apiKey: string, prompt: string): Promise<string | null> {
-  const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" +
-    `?key=${encodeURIComponent(apiKey)}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0, responseMimeType: "application/json" },
-    }),
-  });
-  if (!response.ok) return null;
-  const json = (await response.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
-  };
-  return json.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+  const models = ["gemini-2.5-flash", "gemini-3.6-flash"];
+  for (const model of models) {
+    const url =
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent` +
+      `?key=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0, responseMimeType: "application/json" },
+      }),
+    });
+    if (!response.ok) continue;
+    const json = (await response.json()) as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+    };
+    const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (text) return text;
+  }
+  return null;
 }
 
 function parseRequirements(text: string): RequirementDraft[] | null {

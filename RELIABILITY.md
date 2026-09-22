@@ -26,6 +26,9 @@ Proofs are stored in `reliabilityProofs` by `reliability.runSuite`. The `/judges
 
 ## What is still honest-degraded
 
-- If OpenAI and Gemini keys are absent, extract/draft use the rules engine and `health.providers.primaryLanguage` reports `rules`.
-- If AgentMail inbox id is missing, notify records `failed` with that reason.
+- If OpenAI is absent and Gemini is present, extract/draft use Gemini and `health.providers.primaryLanguage` reports `gemini`.
+- If OpenAI and Gemini keys are both absent, extract/draft use the rules engine and the judge page says `rules`.
+- Seeded `@example.invalid` addresses record `skipped_demo` and are never handed to AgentMail.
+- Live AgentMail send is a loopback to the configured coordination inbox.
+- Accela search HTML is volatile; the watch hashes status-bearing lines rather than the raw page.
 - Portal fetch failure does not invent a new status.

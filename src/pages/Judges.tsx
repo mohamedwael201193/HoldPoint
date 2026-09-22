@@ -1,4 +1,5 @@
 import { useAction, useQuery } from "convex/react";
+import { useState } from "react";
 import { api } from "../../convex/_generated/api";
 import StatusChip from "../components/StatusChip";
 import SiteHeader, { PageShell } from "../components/SiteHeader";
@@ -12,6 +13,8 @@ export default function Judges() {
   const snapshot = useQuery(api.judges.snapshot);
   const providers = useQuery(api.health.providers);
   const bootstrap = useAction(api.demo.bootstrap);
+  const proveLiveSend = useAction(api.mail.proveLiveSend);
+  const [liveSend, setLiveSend] = useState<string | null>(null);
 
   return (
     <PageShell>
@@ -55,7 +58,25 @@ export default function Judges() {
             >
               Seed / refresh demo
             </button>
+            <button
+              type="button"
+              className="rounded-full border border-line px-4 py-2 text-sm"
+              onClick={() => {
+                void proveLiveSend({}).then((result) =>
+                  setLiveSend(
+                    result.ok
+                      ? result.duplicate
+                        ? "Live send already recorded today (idempotent)."
+                        : "Live AgentMail send succeeded."
+                      : `Live send blocked: ${result.reason ?? "unknown"}`,
+                  ),
+                );
+              }}
+            >
+              Prove live send
+            </button>
           </div>
+          {liveSend ? <p className="mt-3 text-sm text-ember">{liveSend}</p> : null}
           <ol className="mt-4 list-decimal space-y-2 pl-5 text-sm text-mute">
             <li>Open operations and seed the labeled Indianapolis Accela workspace.</li>
             <li>Fetch the public source. Unchanged hashes skip language spend.</li>
@@ -116,6 +137,26 @@ export default function Judges() {
             </section>
 
             <section>
+              <h2 className="text-sm tracking-[0.16em] text-mute uppercase">Mailbox ledger</h2>
+              {snapshot.outbound.length === 0 && snapshot.inbound.length === 0 ? (
+                <p className="mt-3 text-sm text-mute">No mail ledger rows yet.</p>
+              ) : (
+                <ul className="mt-3 space-y-2 text-sm">
+                  {snapshot.outbound.slice(0, 6).map((row) => (
+                    <li key={row._id}>
+                      out · {row.status} · {row.subject}
+                    </li>
+                  ))}
+                  {snapshot.inbound.slice(0, 6).map((row) => (
+                    <li key={row._id}>
+                      in · {row.intent ?? "unparsed"} · {row.subject}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section>
               <h2 className="text-sm tracking-[0.16em] text-mute uppercase">Reliability tests</h2>
               {snapshot.proofs.length === 0 ? (
                 <p className="mt-3 text-sm text-mute">Suite has not been run in this deployment.</p>
@@ -137,8 +178,18 @@ export default function Judges() {
           <ul className="mt-3 list-disc space-y-2 pl-5">
             <li>One verified portal family: Accela public search (Indianapolis). Not multi-city.</li>
             <li>Demo trades use labeled invalid inboxes so we never email strangers.</li>
-            <li>AgentMail live send requires an org key with message send plus AGENTMAIL_INBOX_ID.</li>
-            <li>OpenAI is primary; if the key is absent, rules fallback runs and the judge page says so.</li>
+            <li>
+              AgentMail live send is a loopback to the configured coordination inbox. Seeded trades
+              stay skipped_demo.
+            </li>
+            <li>
+              OpenAI is primary. If that key is absent, Gemini is the documented emergency fallback;
+              if both are absent, the rules engine runs and this page says so.
+            </li>
+            <li>
+              Accela search HTML includes volatile viewstate. The watch hashes status-bearing lines,
+              not the raw page, so noise does not count as a permit change.
+            </li>
             <li>No user login: the demo workspace is public, as the hackathon requires an uninvited URL.</li>
           </ul>
         </section>
