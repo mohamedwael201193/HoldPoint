@@ -1,0 +1,20 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.DS_Store
+.env
+.env.*
+!.env.example
+.vercel
+.vite/
+
+coverage/
+playwright-report/
+test-results/
+
+# Historical research artifacts — not product source
+01_ALL_GAS_OFFICIAL_AND_STACK_FORENSICS.md
+02_PARALLEL_AND_COMPETITOR_FORENSICS.md
+03_MARKET_WHITESPACE_AND_IDEA_LAB.md
+04_FINAL_PRODUCT_BLUEPRINT.md
