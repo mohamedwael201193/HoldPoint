@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # HoldPoint
 
 The standing watch for construction permits and inspections.
@@ -36,6 +35,3 @@ Copy `.env.example` to `.env`. Never commit `.env`.
 ## Honesty
 
 The first portal is Accela public search (Indianapolis). Trades in the demo workspace use labeled invalid inboxes so the product never emails strangers. `/judges` does not invent metrics.
-=======
-# HoldPoint
->>>>>>> b4f0b13c0eed4d995db10d29bef3fa45f1b59a41
